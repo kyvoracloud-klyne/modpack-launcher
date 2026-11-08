@@ -1,0 +1,186 @@
+package pack
+
+import (
+	"archive/zip"
+	"bytes"
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"modpack-launcher/internal/githubrel"
+)
+
+func TestExtractAndMods(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "pack.zip")
+	writeZip(t, archive, map[string]string{
+		"ModPack/Example/mod.rules":                                   "ID = example.mod\n",
+		"ModPack/Example/Loader/secret":                               "nope",
+		"ModPack/Yet Another Mod Loader - 3577650065/mod.rules":       "ID = radistmorse.modloader\n",
+		"ModPack/Yet Another Mod Loader - 3577650065/Loader/keep.txt": "yes",
+	})
+	dest := filepath.Join(t.TempDir(), "out")
+	if err := Extract(archive, dest); err != nil {
+		t.Fatal(err)
+	}
+	root, err := ContentRoot(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mods, err := ModsIn(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mods) != 2 {
+		t.Fatalf("mods = %+v", mods)
+	}
+	standard := filepath.Join(t.TempDir(), "Standard Mods")
+	if err := InstallMods(mods, standard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(standard, "Example", "Loader", "secret")); !os.IsNotExist(err) {
+		t.Fatalf("Loader was copied: %v", err)
+	}
+	keep, err := os.ReadFile(filepath.Join(standard, "Yet Another Mod Loader - 3577650065", "Loader", "keep.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(keep) != "yes" {
+		t.Fatalf("yaml loader = %q", keep)
+	}
+}
+
+func TestRejectsZipSlip(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "bad.zip")
+	file, err := os.Create(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(file)
+	writer, err := zw.Create("../evil.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("bad")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	file.Close()
+	err = Extract(archive, t.TempDir())
+	if err == nil {
+		t.Fatal("expected zip slip to be rejected")
+	}
+}
+
+func TestListSelectAndCache(t *testing.T) {
+	archiveBytes := zipBytes(t, map[string]string{
+		"Demo/mod.rules": "ID = demo.mod\n",
+	})
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/packs/releases":
+			_, _ = w.Write([]byte(`[{"tag_name":"v1.2.0","assets":[` +
+				`{"name":"manifest.json","browser_download_url":"` + server.URL + `/manifest.json"},` +
+				`{"name":"demo.zip","browser_download_url":"` + server.URL + `/demo.zip"}` +
+				`]}]`))
+		case "/manifest.json":
+			_, _ = w.Write([]byte(`{"id":"demo","name":"Demo","version":"1.2.0","archive":"demo.zip"}`))
+		case "/demo.zip":
+			_, _ = w.Write(archiveBytes)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &githubrel.Client{BaseURL: server.URL}
+	listed, err := List(context.Background(), client, "acme", "packs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := Select(listed, "demo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.Manifest.Version != "1.2.0" || selected.Archive.Name != "demo.zip" {
+		t.Fatalf("selected = %+v", selected.Manifest)
+	}
+	cache := t.TempDir()
+	dir, err := EnsureCached(context.Background(), client, cache, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Demo", "mod.rules")); err != nil {
+		t.Fatal(err)
+	}
+	again, err := EnsureCached(context.Background(), client, cache, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != dir {
+		t.Fatalf("cache path changed: %s vs %s", again, dir)
+	}
+}
+
+func writeZip(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	if err := os.WriteFile(path, zipBytes(t, files), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func zipBytes(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, body := range files {
+		writer, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestJoinPartsThenExtract(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "pack.zip")
+	writeZip(t, archive, map[string]string{
+		"Demo/mod.rules": "ID = demo.mod\n",
+	})
+	data, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mid := len(data) / 2
+	dir := t.TempDir()
+	partA := filepath.Join(dir, "pack.zip.001")
+	partB := filepath.Join(dir, "pack.zip.002")
+	if err := os.WriteFile(partA, data[:mid], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(partB, data[mid:], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	joined := filepath.Join(dir, "pack.zip")
+	if err := Join(joined, []string{partA, partB}); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "files")
+	if err := Extract(joined, out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "Demo", "mod.rules")); err != nil {
+		t.Fatal(err)
+	}
+}

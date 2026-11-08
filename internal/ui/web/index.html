@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cosmoteer Mod Packs</title>
+<style>
+  :root {
+    --header-top: #1c8ed0;
+    --header-bottom: #146eaa;
+    --bg: #171b20;
+    --side: #22272c;
+    --text: #f4f7fa;
+    --muted: #9aa6b2;
+    --line: #343c44;
+    --play: #2f78f0;
+    --play-hover: #4b8cf6;
+    --sheet: #2b3238;
+    --field: #1b2026;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: "Segoe UI", system-ui, sans-serif; }
+  button, input { font: inherit; }
+  header {
+    height: 54px;
+    background: linear-gradient(var(--header-top), var(--header-bottom));
+    display: flex;
+    align-items: center;
+    padding: 0 18px;
+    gap: 22px;
+  }
+  .brand { font-weight: 750; letter-spacing: 0.12em; font-size: 13px; }
+  header nav { display: flex; gap: 18px; font-size: 13px; letter-spacing: 0.08em; }
+  header nav b { border-bottom: 2px solid #fff; padding-bottom: 4px; }
+  .spacer { flex: 1; }
+  header .ghost, .text-btn {
+    background: transparent;
+    color: #fff;
+    border: 0;
+    cursor: pointer;
+  }
+  header .ghost { font-size: 13px; letter-spacing: 0.04em; }
+  .layout { display: grid; grid-template-columns: 280px 1fr; height: calc(100% - 54px); }
+  aside { background: var(--side); border-right: 1px solid #101316; display: flex; flex-direction: column; min-height: 0; }
+  #search {
+    margin: 12px;
+    background: #1a1e23;
+    border: 1px solid #3c454e;
+    color: white;
+    border-radius: 4px;
+    padding: 8px 10px;
+  }
+  #list { overflow: auto; flex: 1; }
+  .pack {
+    width: 100%;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 14px;
+    cursor: pointer;
+    border: 0;
+    border-left: 3px solid transparent;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+  }
+  .pack:hover { background: #2c333a; }
+  .pack.on { background: #343c44; border-left-color: #5eb6ff; }
+  .mark {
+    width: 36px;
+    height: 36px;
+    border-radius: 7px;
+    display: grid;
+    place-items: center;
+    font-weight: 700;
+    color: white;
+    flex: none;
+  }
+  .pack b { display: block; font-size: 14px; font-weight: 650; }
+  .pack small { color: var(--muted); font-size: 12px; }
+  .side-foot {
+    padding: 12px 14px;
+    color: var(--muted);
+    font-size: 12px;
+    border-top: 1px solid var(--line);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  main {
+    position: relative;
+    min-width: 0;
+    padding: 28px 32px 92px;
+    overflow: auto;
+    background:
+      radial-gradient(900px 420px at 80% -10%, rgba(46, 130, 190, 0.28), transparent 55%),
+      linear-gradient(#1c242c, var(--bg) 280px);
+  }
+  h1 { margin: 0 0 6px; font-size: 34px; font-weight: 600; }
+  .meta { color: var(--muted); margin-bottom: 16px; }
+  .about { max-width: 680px; line-height: 1.55; color: #d7dee6; font-size: 16px; }
+  .empty { color: var(--muted); font-size: 16px; max-width: 560px; }
+  #log {
+    margin-top: 28px;
+    background: rgba(0, 0, 0, 0.28);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    padding: 12px 14px;
+    min-height: 72px;
+    max-height: 220px;
+    overflow: auto;
+    font-family: ui-monospace, "Cascadia Code", monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #c9d4de;
+    white-space: pre-wrap;
+  }
+  #play {
+    position: fixed;
+    right: 28px;
+    bottom: 22px;
+    z-index: 1;
+    background: var(--play);
+    color: white;
+    border: 0;
+    border-radius: 24px;
+    padding: 12px 32px;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+  }
+  body:has(#options:not([hidden])) #play { visibility: hidden; }
+  #play:hover:not(:disabled) { background: var(--play-hover); }
+  #play:disabled { background: #3d4754; color: #c5ced6; cursor: default; }
+  .modal { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, 0.55); display: grid; place-items: center; }
+  .modal[hidden] { display: none; }
+  .sheet {
+    background: var(--sheet);
+    width: min(520px, calc(100% - 32px));
+    max-height: calc(100vh - 48px);
+    overflow: auto;
+    border-radius: 12px;
+    padding: 22px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+  }
+  .sheet h2 { margin: 0 0 8px; font-size: 20px; }
+  label { display: block; margin: 12px 0 4px; color: var(--muted); font-size: 12px; letter-spacing: 0.04em; }
+  input[type="text"] { width: 100%; background: var(--field); color: white; border: 1px solid #3c444c; border-radius: 4px; padding: 8px 10px; }
+  .hint { color: var(--muted); font-size: 13px; line-height: 1.4; }
+  .warn { color: #f0c674; }
+  .row { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 18px; }
+  button.secondary { background: #3e4852; color: white; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+  button.primary { background: var(--play); color: white; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">COSMOTEER</div>
+  <nav><b>PACKS</b></nav>
+  <div class="spacer"></div>
+  <button class="ghost" id="open-options" type="button">Launcher options</button>
+  <span id="build"></span>
+</header>
+<div class="layout">
+  <aside>
+    <input id="search" type="search" placeholder="Search packs" autocomplete="off">
+    <div id="list"></div>
+    <div class="side-foot" id="game-line">Looking for Cosmoteer…</div>
+  </aside>
+  <main>
+    <div id="detail"></div>
+    <pre id="log" hidden></pre>
+  </main>
+</div>
+<button id="play" type="button" disabled>Play</button>
+<div class="modal" id="options" hidden>
+  <form class="sheet" id="options-form">
+    <h2>Launcher options</h2>
+    <p class="hint">Steam's Play button stays on the default profile. This window swaps the pack in only for a modded run.</p>
+    <label for="game">Cosmoteer folder</label>
+    <input id="game" name="gameRoot" type="text" placeholder="/path/to/Cosmoteer">
+    <label for="pack-repo">Pack repository</label>
+    <input id="pack-repo" name="packRepo" type="text" placeholder="owner/modpack-packs">
+    <label for="launcher-repo">Launcher repository</label>
+    <input id="launcher-repo" name="launcherRepo" type="text" placeholder="owner/modpack-launcher">
+    <label for="local-pack">Local pack folder</label>
+    <input id="local-pack" name="localPackDir" type="text" placeholder="optional folder of mods">
+    <p class="hint" id="token-line"></p>
+    <p class="hint warn" id="options-error"></p>
+    <div class="row">
+      <button class="secondary" id="do-restore" type="button">Restore files</button>
+      <button class="secondary" id="do-update" type="button">Check for updates</button>
+      <button class="secondary" id="do-quit" type="button">Quit</button>
+      <button class="primary" type="submit">Save</button>
+    </div>
+  </form>
+</div>
+<script>
+const colors = ["#3d7ea6", "#3f6f54", "#8a5a2a", "#6a4c93", "#8c3d4b", "#2f6f8f"];
+let state = { packs: [], logs: [], config: {}, busy: "", gameRunning: false };
+let selectedKey = "";
+let logText = "";
+
+const $ = (id) => document.getElementById(id);
+
+function keyOf(pack) { return pack.id + "@" + pack.version; }
+
+function selectedPack() {
+  return (state.packs || []).find((pack) => keyOf(pack) === selectedKey) || null;
+}
+
+function colorFor(id) {
+  let n = 0;
+  for (let i = 0; i < id.length; i++) n = (n + id.charCodeAt(i) * (i + 1)) % colors.length;
+  return colors[n];
+}
+
+function renderList() {
+  const q = $("search").value.trim().toLowerCase();
+  const list = $("list");
+  list.replaceChildren();
+  const packs = (state.packs || []).filter((pack) => {
+    const hay = (pack.name + " " + pack.id + " " + pack.version).toLowerCase();
+    return q === "" || hay.includes(q);
+  });
+  if (packs.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "side-foot";
+    empty.textContent = state.packsError || "No packs match.";
+    list.append(empty);
+    return;
+  }
+  for (const pack of packs) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "pack" + (keyOf(pack) === selectedKey ? " on" : "");
+    const mark = document.createElement("span");
+    mark.className = "mark";
+    mark.style.background = colorFor(pack.id);
+    mark.textContent = (pack.name || "?").slice(0, 1).toUpperCase();
+    const text = document.createElement("span");
+    const title = document.createElement("b");
+    title.textContent = pack.name;
+    const version = document.createElement("small");
+    version.textContent = pack.version ? "Version " + pack.version : pack.id;
+    text.append(title, version);
+    button.append(mark, text);
+    button.addEventListener("click", () => {
+      selectedKey = keyOf(pack);
+      render();
+    });
+    list.append(button);
+  }
+}
+
+function renderDetail() {
+  const detail = $("detail");
+  const pack = selectedPack();
+  detail.replaceChildren();
+  if (!pack) {
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = state.packsError || "Choose a pack. Options sets the GitHub repository the launcher reads.";
+    detail.append(p);
+    return;
+  }
+  const title = document.createElement("h1");
+  title.textContent = pack.name;
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = pack.version ? "Version " + pack.version : "";
+  if (pack.archive) meta.textContent += (meta.textContent ? " · " : "") + pack.archive;
+  const about = document.createElement("p");
+  about.className = "about";
+  const standard = "This pack loads only while Cosmoteer is open. Saved ships are copied in. Career saves stay on the Steam profile.";
+  if (pack.id === "__local__") about.textContent = "Local folder " + pack.description + ". " + standard;
+  else about.textContent = pack.description || standard;
+  detail.append(title, meta, about);
+}
+
+function renderPlay() {
+  const button = $("play");
+  const pack = selectedPack();
+  if (state.busy === "playing") button.textContent = "Playing";
+  else if (state.busy === "updating") button.textContent = "Updating";
+  else if (state.gameRunning) button.textContent = "Game is open";
+  else button.textContent = "Play";
+  button.disabled = !pack || state.busy !== "" || state.gameRunning;
+}
+
+function renderLog() {
+  const next = (state.logs || []).join("\n");
+  const log = $("log");
+  if (next === "") {
+    log.hidden = true;
+    return;
+  }
+  log.hidden = false;
+  if (next !== logText) {
+    logText = next;
+    log.textContent = next;
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
+function renderGame() {
+  const line = $("game-line");
+  if (state.gameError) {
+    line.textContent = "Game folder not found";
+    line.title = state.gameError;
+  } else if (state.gameRoot) {
+    line.textContent = state.gameRoot;
+    line.title = state.gameRoot;
+  } else {
+    line.textContent = "Looking for Cosmoteer…";
+    line.title = "";
+  }
+  $("build").textContent = state.version ? "Build " + state.version : "";
+}
+
+function render() {
+  if (selectedKey === "" && state.packs && state.packs.length > 0) selectedKey = keyOf(state.packs[0]);
+  if (selectedPack() == null && state.packs && state.packs.length > 0 && selectedKey !== "") {
+    const still = state.packs.some((pack) => keyOf(pack) === selectedKey);
+    if (!still) selectedKey = keyOf(state.packs[0]);
+  }
+  renderList();
+  renderDetail();
+  renderPlay();
+  renderLog();
+  renderGame();
+}
+
+async function tick() {
+  try {
+    const next = await fetch("/api/state").then((r) => r.json());
+    state = next;
+    if (!state.packs) state.packs = [];
+    if (!state.logs) state.logs = [];
+    render();
+  } catch (err) {
+    /* the launcher is closing */
+  }
+}
+
+$("search").addEventListener("input", renderList);
+
+$("play").addEventListener("click", async () => {
+  const pack = selectedPack();
+  if (!pack) return;
+  $("play").disabled = true;
+  await fetch("/api/launch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: pack.id, version: pack.id === "__local__" ? "" : pack.version })
+  });
+  tick();
+});
+
+$("open-options").addEventListener("click", () => {
+  const cfg = state.config || {};
+  $("game").value = cfg.gameRoot || "";
+  $("pack-repo").value = cfg.packRepo || "";
+  $("launcher-repo").value = cfg.launcherRepo || "";
+  $("local-pack").value = cfg.localPackDir || "";
+  $("token-line").textContent = state.tokenSet
+    ? "A GitHub token is set in the environment. It is not saved in options."
+    : "A private pack repo needs MODPACK_GITHUB_TOKEN or GITHUB_TOKEN in the environment. It is not saved here.";
+  $("options-error").textContent = "";
+  $("options").hidden = false;
+});
+
+$("options").addEventListener("click", (event) => {
+  if (event.target === $("options")) $("options").hidden = true;
+});
+
+$("options-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const body = {
+    gameRoot: $("game").value.trim(),
+    packRepo: $("pack-repo").value.trim(),
+    launcherRepo: $("launcher-repo").value.trim(),
+    localPackDir: $("local-pack").value.trim()
+  };
+  try {
+    const response = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      $("options-error").textContent = payload.error || "Could not save options";
+      return;
+    }
+  } catch (err) {
+    $("options-error").textContent = "Could not save options";
+    return;
+  }
+  $("options").hidden = true;
+  tick();
+});
+
+$("do-restore").addEventListener("click", async () => {
+  const response = await fetch("/api/restore", { method: "POST" });
+  const payload = await response.json();
+  $("options-error").textContent = response.ok ? "Game files restored." : (payload.error || "Restore failed");
+  tick();
+});
+
+$("do-update").addEventListener("click", async () => {
+  $("options-error").textContent = "Checking for a launcher update…";
+  const response = await fetch("/api/update", { method: "POST" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) $("options-error").textContent = payload.error || "Update failed";
+  else $("options-error").textContent = payload.exit ? "Update downloaded. The launcher will close." : "Update check finished.";
+  tick();
+});
+
+$("do-quit").addEventListener("click", async () => {
+  $("options-error").textContent = "Closing…";
+  try {
+    await fetch("/api/quit", { method: "POST" });
+  } catch (err) {
+    /* the launcher is already gone */
+  }
+  window.close();
+});
+
+tick();
+setInterval(tick, 1000);
+setInterval(() => fetch("/api/heartbeat", { method: "POST" }).catch(() => {}), 2000);
+</script>
+</body>
+</html>
