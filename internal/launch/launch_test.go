@@ -97,6 +97,13 @@ func TestPrepareCopiesShipsAndRestores(t *testing.T) {
 	if string(lostCopy) != "lost" {
 		t.Fatalf("lost ship = %q", lostCopy)
 	}
+	settings, err := os.ReadFile(filepath.Join(game.ProfileDir(root), "settings.rules"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(settings), "Yet Another Mod Loader - 3577650065") || !strings.Contains(string(settings), "TrustedMods") {
+		t.Fatalf("settings = %s", settings)
+	}
 	if err := restore(); err != nil {
 		t.Fatal(err)
 	}

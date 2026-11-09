@@ -57,3 +57,49 @@ func TestListAndDownload(t *testing.T) {
 		t.Fatalf("downloaded %q", data)
 	}
 }
+
+func TestDownloadProgress(t *testing.T) {
+	payload := make([]byte, 64*1024)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+
+	var snaps []Progress
+	client := &Client{HTTP: server.Client()}
+	asset := Asset{Name: "pack.zip", BrowserDownloadURL: server.URL, Size: int64(len(payload))}
+	dest := filepath.Join(t.TempDir(), "pack.zip")
+	if err := client.DownloadProgress(context.Background(), asset, dest, func(p Progress) {
+		snaps = append(snaps, p)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(snaps) == 0 {
+		t.Fatal("no progress")
+	}
+	last := snaps[len(snaps)-1]
+	if !last.Done || last.Received != int64(len(payload)) || last.Total != int64(len(payload)) || last.BytesPerSec <= 0 {
+		t.Fatalf("last progress = %+v", last)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(payload) {
+		t.Fatalf("wrote %d bytes", len(got))
+	}
+}
+
+func TestFormatProgress(t *testing.T) {
+	got := FormatProgress(Progress{Name: "pack.zip", Received: 25, Total: 100, BytesPerSec: 1500000})
+	if got != "pack.zip  25.0%  1.5 MB/s" {
+		t.Fatalf("progress = %q", got)
+	}
+	done := FormatProgress(Progress{Name: "pack.zip", Received: 100, Total: 100, BytesPerSec: 2000000, Done: true})
+	if done != "pack.zip  100%  2.0 MB/s" {
+		t.Fatalf("done = %q", done)
+	}
+}

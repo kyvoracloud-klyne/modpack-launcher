@@ -53,7 +53,7 @@ func Check(ctx context.Context, client *githubrel.Client, owner, repo, local str
 }
 
 // Download fetches the asset for this OS next to the running executable.
-func Download(ctx context.Context, client *githubrel.Client, release githubrel.Release, exePath string) (string, error) {
+func Download(ctx context.Context, client *githubrel.Client, release githubrel.Release, exePath string, progress githubrel.ProgressFunc) (string, error) {
 	name, err := AssetName()
 	if err != nil {
 		return "", err
@@ -63,7 +63,7 @@ func Download(ctx context.Context, client *githubrel.Client, release githubrel.R
 		return "", fmt.Errorf("release %s has no %s", release.TagName, name)
 	}
 	dest := exePath + ".new"
-	if err := client.Download(ctx, asset, dest); err != nil {
+	if err := client.DownloadProgress(ctx, asset, dest, progress); err != nil {
 		return "", err
 	}
 	if runtime.GOOS != "windows" {

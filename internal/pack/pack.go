@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"modpack-launcher/internal/fsutil"
 	"modpack-launcher/internal/githubrel"
@@ -130,7 +131,8 @@ func Select(packs []Published, id, version string) (Published, error) {
 }
 
 // EnsureCached downloads and extracts a pack when that version is not already cached.
-func EnsureCached(ctx context.Context, client *githubrel.Client, cacheRoot string, item Published) (string, error) {
+// progress may be nil. For a split archive it reports one transfer across every part.
+func EnsureCached(ctx context.Context, client *githubrel.Client, cacheRoot string, item Published, progress githubrel.ProgressFunc) (string, error) {
 	dest := filepath.Join(cacheRoot, item.Manifest.ID, item.Manifest.Version)
 	stamp := filepath.Join(dest, ".extracted")
 	extractDir := filepath.Join(dest, "files")
@@ -139,10 +141,10 @@ func EnsureCached(ctx context.Context, client *githubrel.Client, cacheRoot strin
 	}
 	archivePath := filepath.Join(dest, item.Manifest.Archive)
 	if len(item.Manifest.Parts) == 0 {
-		if err := client.Download(ctx, item.Archive, archivePath); err != nil {
+		if err := client.DownloadProgress(ctx, item.Archive, archivePath, progress); err != nil {
 			return "", err
 		}
-	} else if err := downloadParts(ctx, client, dest, item, archivePath); err != nil {
+	} else if err := downloadParts(ctx, client, dest, item, archivePath, progress); err != nil {
 		return "", err
 	}
 	if err := os.RemoveAll(extractDir); err != nil {
@@ -157,17 +159,67 @@ func EnsureCached(ctx context.Context, client *githubrel.Client, cacheRoot strin
 	return extractDir, nil
 }
 
-func downloadParts(ctx context.Context, client *githubrel.Client, dest string, item Published, archivePath string) error {
-	var paths []string
+func downloadParts(ctx context.Context, client *githubrel.Client, dest string, item Published, archivePath string, progress githubrel.ProgressFunc) error {
+	var planned int64
+	sized := true
 	for _, name := range item.Manifest.Parts {
 		asset, ok := githubrel.FindAsset(item.Release, name)
 		if !ok {
 			return fmt.Errorf("part %q is not attached to the release", name)
 		}
+		if asset.Size <= 0 {
+			sized = false
+		}
+		planned += asset.Size
+	}
+	if !sized {
+		planned = 0
+	}
+	var base int64
+	started := time.Now()
+	var paths []string
+	for i, name := range item.Manifest.Parts {
+		asset, ok := githubrel.FindAsset(item.Release, name)
+		if !ok {
+			return fmt.Errorf("part %q is not attached to the release", name)
+		}
 		partPath := filepath.Join(dest, name)
-		if err := client.Download(ctx, asset, partPath); err != nil {
+		last := i == len(item.Manifest.Parts)-1
+		err := client.DownloadProgress(ctx, asset, partPath, func(p githubrel.Progress) {
+			if progress == nil {
+				return
+			}
+			got := base + p.Received
+			total := planned
+			done := last && p.Done
+			label := fmt.Sprintf("%s (%d/%d)", name, i+1, len(item.Manifest.Parts))
+			if done {
+				label = item.Manifest.Archive
+				if total == 0 {
+					total = got
+				}
+			}
+			elapsed := time.Since(started).Seconds()
+			var rate float64
+			if elapsed > 0 && got > 0 {
+				rate = float64(got) / elapsed
+			}
+			progress(githubrel.Progress{
+				Name:        label,
+				Received:    got,
+				Total:       total,
+				BytesPerSec: rate,
+				Done:        done,
+			})
+		})
+		if err != nil {
 			return err
 		}
+		info, err := os.Stat(partPath)
+		if err != nil {
+			return err
+		}
+		base += info.Size()
 		paths = append(paths, partPath)
 	}
 	return Join(archivePath, paths)

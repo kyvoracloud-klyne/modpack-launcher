@@ -51,7 +51,13 @@ func Prepare(opts Options) (func() error, error) {
 	if err := swap.Begin(opts.StatePath, opts.Install.Root, opts.PackDir); err != nil {
 		return nil, err
 	}
-	say(opts.Log, "Installed the pack for this run under %s", filepath.Join(opts.Install.Root, "Standard Mods"))
+	example, err := EnablePackMods(opts.Install, profile, opts.PackDir)
+	if err != nil {
+		_ = swap.Restore(opts.StatePath)
+		return nil, err
+	}
+	say(opts.Log, "Installed the pack under %s", filepath.Join(opts.Install.Root, "Standard Mods"))
+	say(opts.Log, "Enabled and trusted %s", example)
 	return func() error {
 		say(opts.Log, "Restoring Standard Mods and the game Bin")
 		return swap.Restore(opts.StatePath)

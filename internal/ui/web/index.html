@@ -115,11 +115,28 @@
     color: #c9d4de;
     white-space: pre-wrap;
   }
-  #play {
+  #actions {
     position: fixed;
     right: 28px;
     bottom: 22px;
     z-index: 1;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  body:has(#options:not([hidden])) #actions { visibility: hidden; }
+  #uninstall {
+    background: #3e4852;
+    color: white;
+    border: 0;
+    border-radius: 24px;
+    padding: 12px 22px;
+    font-size: 16px;
+    font-weight: 650;
+    cursor: pointer;
+  }
+  #uninstall:disabled { color: #c5ced6; cursor: default; }
+  #play {
     background: var(--play);
     color: white;
     border: 0;
@@ -130,9 +147,67 @@
     cursor: pointer;
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
   }
-  body:has(#options:not([hidden])) #play { visibility: hidden; }
   #play:hover:not(:disabled) { background: var(--play-hover); }
   #play:disabled { background: #3d4754; color: #c5ced6; cursor: default; }
+  #download {
+    position: fixed;
+    left: 308px;
+    right: 340px;
+    bottom: 22px;
+    z-index: 6;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  #download[hidden] { display: none; }
+  .dl-label {
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .dl-row { display: flex; align-items: center; gap: 10px; }
+  .dl-track {
+    position: relative;
+    flex: 1;
+    height: 18px;
+    background: #12161b;
+    border: 1px solid #3c454e;
+    border-radius: 9px;
+    overflow: hidden;
+  }
+  #dl-fill {
+    height: 100%;
+    width: 0;
+    background: linear-gradient(#5b9bff, var(--play));
+  }
+  #dl-fill.unknown {
+    width: 35%;
+    animation: dl-slide 1.1s ease-in-out infinite;
+  }
+  @keyframes dl-slide {
+    0% { margin-left: 0; }
+    50% { margin-left: 65%; }
+    100% { margin-left: 0; }
+  }
+  #dl-pct {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+  }
+  #dl-rate {
+    min-width: 92px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+    font-weight: 650;
+  }
   .modal { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, 0.55); display: grid; place-items: center; }
   .modal[hidden] { display: none; }
   .sheet {
@@ -152,6 +227,16 @@
   .row { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 18px; }
   button.secondary { background: #3e4852; color: white; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
   button.primary { background: var(--play); color: white; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+  .version-row { display: flex; align-items: center; gap: 12px; margin: 4px 0 16px; }
+  .version-row label { margin: 0; }
+  select.version {
+    background: var(--field);
+    color: white;
+    border: 1px solid #3c444c;
+    border-radius: 4px;
+    padding: 8px 10px;
+    min-width: 160px;
+  }
 </style>
 </head>
 <body>
@@ -173,11 +258,24 @@
     <pre id="log" hidden></pre>
   </main>
 </div>
-<button id="play" type="button" disabled>Play</button>
+<div id="download" hidden>
+  <div class="dl-label" id="dl-label"></div>
+  <div class="dl-row">
+    <div class="dl-track" id="dl-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div id="dl-fill"></div>
+      <span id="dl-pct">0%</span>
+    </div>
+    <span id="dl-rate"></span>
+  </div>
+</div>
+<div id="actions">
+  <button id="uninstall" type="button">Uninstall</button>
+  <button id="play" type="button" disabled>Play</button>
+</div>
 <div class="modal" id="options" hidden>
   <form class="sheet" id="options-form">
     <h2>Launcher options</h2>
-    <p class="hint">Steam's Play button stays on the default profile. This window swaps the pack in only for a modded run.</p>
+    <p class="hint">Play leaves the pack installed. Uninstall puts Standard Mods and the game Bin back so Steam's Play button is unmodded.</p>
     <label for="game">Cosmoteer folder</label>
     <input id="game" name="gameRoot" type="text" placeholder="/path/to/Cosmoteer">
     <label for="pack-repo">Pack repository</label>
@@ -189,7 +287,7 @@
     <p class="hint" id="token-line"></p>
     <p class="hint warn" id="options-error"></p>
     <div class="row">
-      <button class="secondary" id="do-restore" type="button">Restore files</button>
+      <button class="secondary" id="do-restore" type="button">Uninstall mod pack</button>
       <button class="secondary" id="do-update" type="button">Check for updates</button>
       <button class="secondary" id="do-quit" type="button">Quit</button>
       <button class="primary" type="submit">Save</button>
@@ -199,15 +297,36 @@
 <script>
 const colors = ["#3d7ea6", "#3f6f54", "#8a5a2a", "#6a4c93", "#8c3d4b", "#2f6f8f"];
 let state = { packs: [], logs: [], config: {}, busy: "", gameRunning: false };
-let selectedKey = "";
+let selectedId = "";
+const versionChoice = {};
 let logText = "";
 
 const $ = (id) => document.getElementById(id);
 
-function keyOf(pack) { return pack.id + "@" + pack.version; }
+function packGroups(packs) {
+  const order = [];
+  const map = new Map();
+  for (const pack of packs || []) {
+    if (!map.has(pack.id)) {
+      map.set(pack.id, []);
+      order.push(pack.id);
+    }
+    map.get(pack.id).push(pack);
+  }
+  return { order, map };
+}
+
+function chosenVersion(id, versions) {
+  const want = versionChoice[id];
+  if (want && versions.some((pack) => pack.version === want)) return want;
+  return versions[0] ? versions[0].version : "";
+}
 
 function selectedPack() {
-  return (state.packs || []).find((pack) => keyOf(pack) === selectedKey) || null;
+  const { map } = packGroups(state.packs);
+  const versions = map.get(selectedId) || [];
+  const version = chosenVersion(selectedId, versions);
+  return versions.find((pack) => pack.version === version) || null;
 }
 
 function colorFor(id) {
@@ -220,21 +339,24 @@ function renderList() {
   const q = $("search").value.trim().toLowerCase();
   const list = $("list");
   list.replaceChildren();
-  const packs = (state.packs || []).filter((pack) => {
+  const matched = (state.packs || []).filter((pack) => {
     const hay = (pack.name + " " + pack.id + " " + pack.version).toLowerCase();
     return q === "" || hay.includes(q);
   });
-  if (packs.length === 0) {
+  const { order, map } = packGroups(matched);
+  if (order.length === 0) {
     const empty = document.createElement("div");
     empty.className = "side-foot";
     empty.textContent = state.packsError || "No packs match.";
     list.append(empty);
     return;
   }
-  for (const pack of packs) {
+  for (const id of order) {
+    const versions = map.get(id);
+    const pack = versions.find((item) => item.version === chosenVersion(id, versions)) || versions[0];
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "pack" + (keyOf(pack) === selectedKey ? " on" : "");
+    button.className = "pack" + (id === selectedId ? " on" : "");
     const mark = document.createElement("span");
     mark.className = "mark";
     mark.style.background = colorFor(pack.id);
@@ -242,12 +364,10 @@ function renderList() {
     const text = document.createElement("span");
     const title = document.createElement("b");
     title.textContent = pack.name;
-    const version = document.createElement("small");
-    version.textContent = pack.version ? "Version " + pack.version : pack.id;
-    text.append(title, version);
+    text.append(title);
     button.append(mark, text);
     button.addEventListener("click", () => {
-      selectedKey = keyOf(pack);
+      selectedId = id;
       render();
     });
     list.append(button);
@@ -267,26 +387,90 @@ function renderDetail() {
   }
   const title = document.createElement("h1");
   title.textContent = pack.name;
+  const versions = packGroups(state.packs).map.get(pack.id) || [pack];
+  const row = document.createElement("div");
+  row.className = "version-row";
+  const label = document.createElement("label");
+  label.htmlFor = "version";
+  label.textContent = "Version";
+  const select = document.createElement("select");
+  select.className = "version";
+  select.id = "version";
+  for (const item of versions) {
+    const option = document.createElement("option");
+    option.value = item.version;
+    option.textContent = item.version || "latest";
+    if (item.version === pack.version) option.selected = true;
+    select.append(option);
+  }
+  select.addEventListener("change", () => {
+    versionChoice[pack.id] = select.value;
+    render();
+  });
+  row.append(label, select);
   const meta = document.createElement("div");
   meta.className = "meta";
-  meta.textContent = pack.version ? "Version " + pack.version : "";
-  if (pack.archive) meta.textContent += (meta.textContent ? " · " : "") + pack.archive;
+  meta.textContent = pack.archive || "";
   const about = document.createElement("p");
   about.className = "about";
-  const standard = "This pack loads only while Cosmoteer is open. Saved ships are copied in. Career saves stay on the Steam profile.";
+  const standard = "Play leaves this pack installed and enables its mods. Uninstall puts the game files back. Saved ships are copied in. Career saves stay on the Steam profile.";
   if (pack.id === "__local__") about.textContent = "Local folder " + pack.description + ". " + standard;
   else about.textContent = pack.description || standard;
-  detail.append(title, meta, about);
+  detail.append(title, row, meta, about);
+}
+
+function formatBytes(n) {
+  n = Number(n) || 0;
+  if (n < 1000) return Math.round(n) + " B";
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = n;
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit++;
+  }
+  return value.toFixed(value >= 10 ? 1 : 2) + " " + units[unit];
+}
+
+function formatRate(n) {
+  return formatBytes(n) + "/s";
+}
+
+function renderDownload() {
+  const box = $("download");
+  const dl = state.download;
+  const show = !!(dl && dl.active && !(dl.done && state.gameRunning));
+  box.hidden = !show;
+  if (!show) return;
+  const known = dl.total > 0;
+  const pct = known ? Math.max(0, Math.min(100, dl.received / dl.total * 100)) : (dl.done ? 100 : 0);
+  const pctText = known || dl.done ? (dl.done || pct >= 100 ? "100%" : pct.toFixed(1) + "%") : "…";
+  const fill = $("dl-fill");
+  fill.classList.toggle("unknown", !known && !dl.done);
+  fill.style.width = (!known && !dl.done) ? "" : pct + "%";
+  $("dl-pct").textContent = pctText;
+  $("dl-rate").textContent = formatRate(dl.bytesPerSec);
+  const verb = dl.done ? "Downloaded" : "Downloading";
+  let detail = verb + " " + (dl.name || "pack");
+  if (known) detail += " · " + formatBytes(dl.received) + " / " + formatBytes(dl.total);
+  else if (dl.received > 0) detail += " · " + formatBytes(dl.received);
+  $("dl-label").textContent = detail;
+  const track = $("dl-track");
+  track.setAttribute("aria-valuenow", String(Math.round(pct)));
+  track.setAttribute("aria-valuetext", pctText + ", " + formatRate(dl.bytesPerSec));
+  if (!$("options").hidden) $("options-error").textContent = detail + "  " + pctText + "  " + formatRate(dl.bytesPerSec);
 }
 
 function renderPlay() {
   const button = $("play");
   const pack = selectedPack();
+  const blocked = state.busy !== "" || state.gameRunning;
   if (state.busy === "playing") button.textContent = "Playing";
   else if (state.busy === "updating") button.textContent = "Updating";
   else if (state.gameRunning) button.textContent = "Game is open";
   else button.textContent = "Play";
-  button.disabled = !pack || state.busy !== "" || state.gameRunning;
+  button.disabled = !pack || blocked;
+  $("uninstall").disabled = blocked;
 }
 
 function renderLog() {
@@ -320,14 +504,20 @@ function renderGame() {
 }
 
 function render() {
-  if (selectedKey === "" && state.packs && state.packs.length > 0) selectedKey = keyOf(state.packs[0]);
-  if (selectedPack() == null && state.packs && state.packs.length > 0 && selectedKey !== "") {
-    const still = state.packs.some((pack) => keyOf(pack) === selectedKey);
-    if (!still) selectedKey = keyOf(state.packs[0]);
-  }
+  const { order } = packGroups(state.packs);
+  if (selectedId === "" && order.length > 0) selectedId = order[0];
+  if (selectedId !== "" && !order.includes(selectedId) && order.length > 0) selectedId = order[0];
   renderList();
+  if (document.activeElement && document.activeElement.id === "version") {
+    renderPlay();
+    renderDownload();
+    renderLog();
+    renderGame();
+    return;
+  }
   renderDetail();
   renderPlay();
+  renderDownload();
   renderLog();
   renderGame();
 }
@@ -402,12 +592,17 @@ $("options-form").addEventListener("submit", async (event) => {
   tick();
 });
 
-$("do-restore").addEventListener("click", async () => {
+async function uninstallPack() {
   const response = await fetch("/api/restore", { method: "POST" });
-  const payload = await response.json();
-  $("options-error").textContent = response.ok ? "Game files restored." : (payload.error || "Restore failed");
+  const payload = await response.json().catch(() => ({}));
+  if (!$("options").hidden) {
+    $("options-error").textContent = response.ok ? "Mod pack uninstalled." : (payload.error || "Uninstall failed");
+  }
   tick();
-});
+}
+
+$("uninstall").addEventListener("click", uninstallPack);
+$("do-restore").addEventListener("click", uninstallPack);
 
 $("do-update").addEventListener("click", async () => {
   $("options-error").textContent = "Checking for a launcher update…";
@@ -428,8 +623,11 @@ $("do-quit").addEventListener("click", async () => {
   window.close();
 });
 
-tick();
-setInterval(tick, 1000);
+async function poll() {
+  await tick();
+  setTimeout(poll, state.busy ? 300 : 1000);
+}
+poll();
 setInterval(() => fetch("/api/heartbeat", { method: "POST" }).catch(() => {}), 2000);
 </script>
 </body>

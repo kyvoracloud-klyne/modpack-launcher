@@ -130,6 +130,11 @@ func installProxy(statePath, bin, yamlDir string, state *State) error {
 	if runtime.GOOS == "windows" {
 		names = []string{"winmm.dll", "ModLoader.dll"}
 	} else {
+		// The Linux proxy is named Cosmoteer.dll and loads the real assembly
+		// from Cosmoteer_o.dll beside it. A fresh Bin only has Cosmoteer.dll.
+		if err := stageLinuxOriginal(statePath, bin, state); err != nil {
+			return err
+		}
 		names = []string{"Cosmoteer.dll", "ModLoader.dll", "unmanaged.dll"}
 	}
 	for _, name := range names {
@@ -159,12 +164,47 @@ func installProxy(statePath, bin, yamlDir string, state *State) error {
 	return nil
 }
 
+// stageLinuxOriginal moves Bin/Cosmoteer.dll to Cosmoteer_o.dll when the
+// renamed assembly is not already there. Restore moves that file back.
+func stageLinuxOriginal(statePath, bin string, state *State) error {
+	original := filepath.Join(bin, "Cosmoteer.dll")
+	renamed := filepath.Join(bin, "Cosmoteer_o.dll")
+	if _, err := os.Stat(renamed); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := os.Stat(original); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("Bin is missing Cosmoteer.dll")
+		}
+		return err
+	}
+	if err := os.Rename(original, renamed); err != nil {
+		return err
+	}
+	state.BinBackups = append(state.BinBackups, FileBackup{Original: original, Backup: renamed})
+	return save(statePath, *state)
+}
+
 // ShouldRestore reports whether a saved swap has no live launcher and the game is closed.
 func ShouldRestore(state State, gameRunning bool) bool {
 	if pidAlive(state.OwnerPID) || gameRunning {
 		return false
 	}
 	return true
+}
+
+// InUse reports whether Cosmoteer or a different launcher process still owns the swap.
+// The launcher that installed the pack can uninstall it.
+func InUse(state State, gameRunning bool) bool {
+	if gameRunning {
+		return true
+	}
+	if state.OwnerPID == 0 || state.OwnerPID == os.Getpid() {
+		return false
+	}
+	return pidAlive(state.OwnerPID)
 }
 
 func Restore(statePath string) error {

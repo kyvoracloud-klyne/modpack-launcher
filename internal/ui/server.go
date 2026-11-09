@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"modpack-launcher/internal/app"
 	"modpack-launcher/internal/config"
 	"modpack-launcher/internal/game"
+	"modpack-launcher/internal/githubrel"
+	"modpack-launcher/internal/launch"
 	"modpack-launcher/internal/pack"
 )
 
@@ -27,12 +30,22 @@ type PackInfo struct {
 	Archive     string `json:"archive"`
 }
 
+// DownloadStatus is the pack or launcher download shown in the window.
+type DownloadStatus struct {
+	Name        string  `json:"name"`
+	Received    int64   `json:"received"`
+	Total       int64   `json:"total"`
+	BytesPerSec float64 `json:"bytesPerSec"`
+	Done        bool    `json:"done"`
+	Active      bool    `json:"active"`
+}
+
 // Runner is the launch work behind the window. Tests substitute their own.
 type Runner interface {
 	List(ctx context.Context, cfg config.Config) ([]pack.Published, error)
-	Launch(cfg config.Config, id, version string, log func(string)) error
+	Launch(cfg config.Config, id, version string, log func(string), progress githubrel.ProgressFunc) error
 	Restore() error
-	Update(cfg config.Config, version string, log func(string)) (exit bool, err error)
+	Update(cfg config.Config, version string, log func(string), progress githubrel.ProgressFunc) (exit bool, err error)
 	Recover(log func(string)) error
 }
 
@@ -43,14 +56,14 @@ func (DefaultRunner) List(ctx context.Context, cfg config.Config) ([]pack.Publis
 	return app.List(ctx, cfg)
 }
 
-func (DefaultRunner) Launch(cfg config.Config, id, version string, log func(string)) error {
-	return app.Launch(cfg, id, version, "", log)
+func (DefaultRunner) Launch(cfg config.Config, id, version string, log func(string), progress githubrel.ProgressFunc) error {
+	return app.Launch(cfg, id, version, "", log, progress)
 }
 
 func (DefaultRunner) Restore() error { return app.Restore() }
 
-func (DefaultRunner) Update(cfg config.Config, version string, log func(string)) (bool, error) {
-	return app.Update(cfg, version, false, log)
+func (DefaultRunner) Update(cfg config.Config, version string, log func(string), progress githubrel.ProgressFunc) (bool, error) {
+	return app.Update(cfg, version, false, log, progress)
 }
 
 func (DefaultRunner) Recover(log func(string)) error { return app.Recover(log) }
@@ -61,16 +74,18 @@ type Server struct {
 	ConfigPath string
 	Runner     Runner
 
-	mu       sync.Mutex
-	cfg      config.Config
-	packs    []PackInfo
-	packsErr string
-	logs     []string
-	busy     string
-	seen     time.Time
-	seenOnce bool
-	quit     chan struct{}
-	quitOnce sync.Once
+	mu             sync.Mutex
+	cfg            config.Config
+	packs          []PackInfo
+	packsErr       string
+	logs           []string
+	busy           string
+	download       *DownloadStatus
+	downloadLogged bool
+	seen           time.Time
+	seenOnce       bool
+	quit           chan struct{}
+	quitOnce       sync.Once
 }
 
 // New serves the pack window for an already loaded config.
@@ -202,13 +217,16 @@ func (s *Server) launch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.busy = "playing"
+	s.download = nil
+	s.downloadLogged = false
 	cfg := s.cfg
 	s.logs = append(s.logs, "Play "+req.ID)
 	s.mu.Unlock()
 	go func() {
-		err := s.Runner.Launch(cfg, req.ID, req.Version, s.log)
+		err := s.Runner.Launch(cfg, req.ID, req.Version, s.log, s.noteProgress)
 		s.mu.Lock()
 		s.busy = ""
+		s.download = nil
 		if err != nil {
 			s.logs = appendLine(s.logs, "Error: "+err.Error())
 		}
@@ -222,7 +240,13 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
-	s.log("Restored Standard Mods and the game Bin")
+	s.mu.Lock()
+	cfg := s.cfg
+	s.mu.Unlock()
+	if install, err := game.Resolve(cfg.GameRoot); err == nil {
+		_ = launch.ClearEnabledMods(filepath.Join(game.ProfileDir(install.Root), "settings.rules"))
+	}
+	s.log("Uninstalled the mod pack")
 	writeJSON(w, http.StatusOK, map[string]bool{"restored": true})
 }
 
@@ -234,11 +258,14 @@ func (s *Server) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.busy = "updating"
+	s.download = nil
+	s.downloadLogged = false
 	cfg := s.cfg
 	s.mu.Unlock()
-	exit, err := s.Runner.Update(cfg, s.Version, s.log)
+	exit, err := s.Runner.Update(cfg, s.Version, s.log, s.noteProgress)
 	s.mu.Lock()
 	s.busy = ""
+	s.download = nil
 	s.mu.Unlock()
 	if err != nil {
 		s.log("Error: " + err.Error())
@@ -323,6 +350,7 @@ func (s *Server) snapshot() map[string]any {
 	packs := append([]PackInfo(nil), s.packs...)
 	busy := s.busy
 	packsErr := s.packsErr
+	download := s.download
 	s.mu.Unlock()
 	gameRoot := ""
 	gameErr := ""
@@ -343,6 +371,24 @@ func (s *Server) snapshot() map[string]any {
 		"logs":        logs,
 		"packs":       packs,
 		"packsError":  packsErr,
+		"download":    download,
+	}
+}
+
+func (s *Server) noteProgress(p githubrel.Progress) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.download = &DownloadStatus{
+		Name:        p.Name,
+		Received:    p.Received,
+		Total:       p.Total,
+		BytesPerSec: p.BytesPerSec,
+		Done:        p.Done,
+		Active:      true,
+	}
+	if p.Done && !s.downloadLogged {
+		s.downloadLogged = true
+		s.logs = appendLine(s.logs, "Downloaded "+githubrel.FormatProgress(p))
 	}
 }
 

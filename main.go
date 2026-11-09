@@ -13,8 +13,16 @@ import (
 	"modpack-launcher/internal/app"
 	"modpack-launcher/internal/config"
 	"modpack-launcher/internal/game"
+	"modpack-launcher/internal/githubrel"
 	"modpack-launcher/internal/ui"
 )
+
+func cliProgress(p githubrel.Progress) {
+	fmt.Printf("\r%s\033[K", githubrel.FormatProgress(p))
+	if p.Done {
+		fmt.Println()
+	}
+}
 
 // Version is set with -ldflags "-X main.Version=...".
 var Version = "dev"
@@ -63,8 +71,8 @@ Usage:
   modpack-launcher launch --pack ID [--version V] [--pack-dir PATH]
   modpack-launcher restore
 
-With no arguments, the pack window opens. It lists packs, and Play swaps
-the chosen pack in for one Cosmoteer session.
+With no arguments, the pack window opens. Each pack is listed once.
+The description page has a version menu.
 
 update downloads the newest launcher release and replaces this binary.
 The launcher repository is kyvoracloud-klyne/modpack-launcher.
@@ -72,11 +80,10 @@ Pack updates come from kyvoracloud-klyne/cosmoteer-modpack-2026 release
 manifest.json. A release can name one archive or ordered parts that join
 into that archive.
 launch downloads the chosen pack, copies missing Saved Ships and Lost Ships
-into <game>/ModPackProfile, swaps Standard Mods and the YAML Bin proxy in for
-that run, and starts Cosmoteer with --rootsavepath. Career saves are not copied.
-The swap is undone when the game exits, and again on the next start if the
-game was killed. Steam's Play button keeps the restored files and the default
-profile.
+into <game>/ModPackProfile, swaps Standard Mods and the YAML Bin proxy in,
+enables and trusts those mods, and starts Cosmoteer with --rootsavepath.
+Career saves are not copied. The pack stays installed after Cosmoteer closes.
+restore uninstalls it, putting Standard Mods and the Bin proxy back.
 
 On Linux the game is started with steam -applaunch %s. On Windows,
 Bin/Cosmoteer.exe is started directly.
@@ -164,7 +171,7 @@ func cmdUpdate(args []string) error {
 	if err != nil {
 		return err
 	}
-	exit, err := app.Update(cfg, Version, *check, nil)
+	exit, err := app.Update(cfg, Version, *check, nil, cliProgress)
 	if exit {
 		os.Exit(0)
 	}
@@ -223,7 +230,7 @@ func cmdLaunch(args []string) error {
 	if err != nil {
 		return err
 	}
-	return app.Launch(cfg, *packID, *version, *packDir, nil)
+	return app.Launch(cfg, *packID, *version, *packDir, nil, cliProgress)
 }
 
 func cmdRestore(args []string) error {
@@ -242,6 +249,6 @@ func cmdRestore(args []string) error {
 	if err := app.Restore(); err != nil {
 		return err
 	}
-	fmt.Println("Restored")
+	fmt.Println("Uninstalled the mod pack")
 	return nil
 }

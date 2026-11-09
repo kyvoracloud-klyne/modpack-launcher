@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -111,14 +112,14 @@ func TestListSelectAndCache(t *testing.T) {
 		t.Fatalf("selected = %+v", selected.Manifest)
 	}
 	cache := t.TempDir()
-	dir, err := EnsureCached(context.Background(), client, cache, selected)
+	dir, err := EnsureCached(context.Background(), client, cache, selected, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "Demo", "mod.rules")); err != nil {
 		t.Fatal(err)
 	}
-	again, err := EnsureCached(context.Background(), client, cache, selected)
+	again, err := EnsureCached(context.Background(), client, cache, selected, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,4 +184,65 @@ func TestJoinPartsThenExtract(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(out, "Demo", "mod.rules")); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestSplitDownloadProgress(t *testing.T) {
+	archive := zipBytes(t, map[string]string{
+		"Demo/mod.rules": "ID = demo.mod\n",
+	})
+	mid := len(archive) / 2
+	partA := archive[:mid]
+	partB := archive[mid:]
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/packs/releases":
+			_, _ = w.Write([]byte(`[{"tag_name":"v1","assets":[` +
+				`{"name":"manifest.json","browser_download_url":"` + server.URL + `/manifest.json"},` +
+				`{"name":"demo.zip.000","size":` + itoa(len(partA)) + `,"browser_download_url":"` + server.URL + `/a"},` +
+				`{"name":"demo.zip.001","size":` + itoa(len(partB)) + `,"browser_download_url":"` + server.URL + `/b"}` +
+				`]}]`))
+		case "/manifest.json":
+			_, _ = w.Write([]byte(`{"id":"demo","version":"1","archive":"demo.zip","parts":["demo.zip.000","demo.zip.001"]}`))
+		case "/a":
+			_, _ = w.Write(partA)
+		case "/b":
+			_, _ = w.Write(partB)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &githubrel.Client{BaseURL: server.URL}
+	listed, err := List(context.Background(), client, "acme", "packs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snaps []githubrel.Progress
+	var previous int64
+	_, err = EnsureCached(context.Background(), client, t.TempDir(), listed[0], func(p githubrel.Progress) {
+		if p.Received < previous {
+			t.Fatalf("progress went backwards: %+v after %d", p, previous)
+		}
+		previous = p.Received
+		if p.Total != int64(len(archive)) && !(p.Done && p.Total == int64(len(archive))) {
+			t.Fatalf("total = %d, want %d (%+v)", p.Total, len(archive), p)
+		}
+		snaps = append(snaps, p)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snaps) == 0 || !snaps[len(snaps)-1].Done {
+		t.Fatalf("snaps = %+v", snaps)
+	}
+	last := snaps[len(snaps)-1]
+	if last.Name != "demo.zip" || last.Received != int64(len(archive)) || last.BytesPerSec <= 0 {
+		t.Fatalf("last = %+v", last)
+	}
+}
+
+func itoa(n int) string {
+	return fmt.Sprintf("%d", n)
 }
