@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -245,4 +247,102 @@ func TestSplitDownloadProgress(t *testing.T) {
 
 func itoa(n int) string {
 	return fmt.Sprintf("%d", n)
+}
+
+func TestApplyDeltaAndEnsureCached(t *testing.T) {
+	v1 := zipBytes(t, map[string]string{
+		"Demo/mod.rules": "ID = demo.mod\n",
+		"Demo/old.txt":   "old",
+		"Demo/keep.txt":  "keep",
+	})
+	delta := zipBytes(t, map[string]string{
+		"_delta.json":   `{"from":"1.0.0","to":"1.0.1","deleted":["Demo/old.txt"]}`,
+		"Demo/mod.rules": "ID = demo.mod\nName = New\n",
+		"Demo/new.txt":   "new",
+	})
+	filesJSON := `{"id":"demo","version":"1.0.1","files":{` +
+		`"Demo/mod.rules":{"sha256":"` + shaOf("ID = demo.mod\nName = New\n") + `","size":` + itoa(len("ID = demo.mod\nName = New\n")) + `},` +
+		`"Demo/keep.txt":{"sha256":"` + shaOf("keep") + `","size":4},` +
+		`"Demo/new.txt":{"sha256":"` + shaOf("new") + `","size":3}` +
+		`}}`
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/packs/releases":
+			_, _ = w.Write([]byte(`[
+			{"tag_name":"v1.0.1","assets":[
+				{"name":"manifest.json","browser_download_url":"` + server.URL + `/manifest-1.0.1.json"},
+				{"name":"demo-1.0.1.zip","browser_download_url":"` + server.URL + `/full-1.0.1.zip"},
+				{"name":"delta-1.0.0-to-1.0.1.zip","browser_download_url":"` + server.URL + `/delta.zip"},
+				{"name":"files-1.0.1.json","browser_download_url":"` + server.URL + `/files.json"}
+			]},
+			{"tag_name":"v1.0.0","assets":[
+				{"name":"manifest.json","browser_download_url":"` + server.URL + `/manifest-1.0.0.json"},
+				{"name":"demo-1.0.0.zip","browser_download_url":"` + server.URL + `/full-1.0.0.zip"}
+			]}]`))
+		case "/manifest-1.0.0.json":
+			_, _ = w.Write([]byte(`{"id":"demo","version":"1.0.0","archive":"demo-1.0.0.zip"}`))
+		case "/manifest-1.0.1.json":
+			_, _ = w.Write([]byte(`{"id":"demo","version":"1.0.1","archive":"demo-1.0.1.zip","files":"files-1.0.1.json","deltas":[{"from":"1.0.0","archive":"delta-1.0.0-to-1.0.1.zip"}]}`))
+		case "/full-1.0.0.zip":
+			_, _ = w.Write(v1)
+		case "/full-1.0.1.zip":
+			t.Fatal("full 1.0.1 download should not happen when delta applies")
+		case "/delta.zip":
+			_, _ = w.Write(delta)
+		case "/files.json":
+			_, _ = w.Write([]byte(filesJSON))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &githubrel.Client{BaseURL: server.URL}
+	listed, err := List(context.Background(), client, "acme", "packs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := t.TempDir()
+	v1pack, err := Select(listed, "demo", "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureCached(context.Background(), client, cache, v1pack, nil); err != nil {
+		t.Fatal(err)
+	}
+	v2pack, err := Select(listed, "demo", "1.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := EnsureCached(context.Background(), client, cache, v2pack, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "Demo", "mod.rules"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "ID = demo.mod\nName = New\n" {
+		t.Fatalf("mod.rules = %q", body)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Demo", "old.txt")); !os.IsNotExist(err) {
+		t.Fatalf("old.txt should be deleted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Demo", "new.txt")); err != nil {
+		t.Fatal(err)
+	}
+	keep, err := os.ReadFile(filepath.Join(dir, "Demo", "keep.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(keep) != "keep" {
+		t.Fatalf("keep = %q", keep)
+	}
+}
+
+func shaOf(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }

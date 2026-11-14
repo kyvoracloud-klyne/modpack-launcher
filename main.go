@@ -79,10 +79,10 @@ The launcher repository is kyvoracloud-klyne/modpack-launcher.
 Pack updates come from kyvoracloud-klyne/cosmoteer-modpack-2026 release
 manifest.json. A release can name one archive or ordered parts that join
 into that archive.
-launch downloads the chosen pack, copies missing Saved Ships and Lost Ships
-into <game>/ModPackProfile, swaps Standard Mods and the YAML Bin proxy in,
+launch downloads the chosen pack, copies missing Saved Ships, Lost Ships,
+and Saved Games into <game>/ModPackProfile, swaps Standard Mods and the YAML Bin proxy in,
 enables and trusts those mods, and starts Cosmoteer with --rootsavepath.
-Career saves are not copied. The pack stays installed after Cosmoteer closes.
+A file already in the mod profile is left unchanged. Settings stay on the Steam profile. The pack stays installed after Cosmoteer closes.
 restore uninstalls it, putting Standard Mods and the Bin proxy back.
 
 On Linux the game is started with steam -applaunch %s. On Windows,

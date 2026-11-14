@@ -122,7 +122,7 @@ func Launch(cfg config.Config, packID, version, packDir string, log func(string)
 	libraries, err := ships.FindProfileLibraries(game.ShipSearchRoots(install))
 	if err != nil {
 		say(log, "Warning: %v", err)
-		say(log, "Continuing with an empty mod profile. Career saves are not copied.")
+		say(log, "Continuing without copying ships or game saves.")
 	} else {
 		opts.Ships = libraries
 	}

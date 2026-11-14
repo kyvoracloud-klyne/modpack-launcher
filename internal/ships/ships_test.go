@@ -92,10 +92,67 @@ func TestFindProfileLibrariesPicksNewest(t *testing.T) {
 	if _, err := CopyLibraries(got, profile); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(profile, "Saved Games")); !os.IsNotExist(err) {
-		t.Fatal("career saves were copied")
+	save, err := os.ReadFile(filepath.Join(profile, "Saved Games", "career.sav"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(save) != "career" {
+		t.Fatalf("save = %q", save)
+	}
+	if _, err := os.Stat(filepath.Join(profile, "settings.rules")); !os.IsNotExist(err) {
+		t.Fatal("settings were copied")
 	}
 	if _, err := os.Stat(filepath.Join(profile, "Saved Ships", "new.png")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCopyLibrariesKeepsExistingSave(t *testing.T) {
+	src := t.TempDir()
+	games := filepath.Join(src, "Saved Games")
+	if err := os.MkdirAll(filepath.Join(games, "Auto Saves"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(games, "Career.savedgame"), []byte("from-steam"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(games, "Auto Saves", "Auto-Save.savedgame"), []byte("auto"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(games, "steam_autocloud.vdf"), []byte("cloud"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := t.TempDir()
+	existing := []byte("already-in-mod-profile")
+	if err := os.MkdirAll(filepath.Join(profile, "Saved Games"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profile, "Saved Games", "Career.savedgame"), existing, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	copied, err := CopyLibraries(Libraries{SavedGames: games}, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copied != 1 {
+		t.Fatalf("copied %d files", copied)
+	}
+	got, err := os.ReadFile(filepath.Join(profile, "Saved Games", "Career.savedgame"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, existing) {
+		t.Fatalf("existing save was overwritten: %q", got)
+	}
+	auto, err := os.ReadFile(filepath.Join(profile, "Saved Games", "Auto Saves", "Auto-Save.savedgame"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(auto) != "auto" {
+		t.Fatalf("auto save = %q", auto)
+	}
+	if _, err := os.Stat(filepath.Join(profile, "Saved Games", "steam_autocloud.vdf")); !os.IsNotExist(err) {
+		t.Fatal("steam cloud file was copied")
 	}
 }

@@ -413,7 +413,7 @@ function renderDetail() {
   meta.textContent = pack.archive || "";
   const about = document.createElement("p");
   about.className = "about";
-  const standard = "Play leaves this pack installed and enables its mods. Uninstall puts the game files back. Saved ships are copied in. Career saves stay on the Steam profile.";
+  const standard = "Play leaves this pack installed and enables its mods. Uninstall puts the game files back. Saved ships and game saves are copied in. A file already in the mod profile is left as it is.";
   if (pack.id === "__local__") about.textContent = "Local folder " + pack.description + ". " + standard;
   else about.textContent = pack.description || standard;
   detail.append(title, row, meta, about);
@@ -422,7 +422,7 @@ function renderDetail() {
 function formatBytes(n) {
   n = Number(n) || 0;
   if (n < 1000) return Math.round(n) + " B";
-  const units = ["KB", "MB", "GB", "TB"];
+  const units = ["B", "KB", "MB", "GB", "TB"];
   let value = n;
   let unit = 0;
   while (value >= 1000 && unit < units.length - 1) {

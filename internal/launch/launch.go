@@ -41,12 +41,12 @@ func Prepare(opts Options) (func() error, error) {
 	if err := os.MkdirAll(profile, 0o755); err != nil {
 		return nil, err
 	}
-	if !opts.SkipShips && (opts.Ships.SavedShips != "" || opts.Ships.LostShips != "") {
+	if !opts.SkipShips && (opts.Ships.SavedShips != "" || opts.Ships.LostShips != "" || opts.Ships.SavedGames != "") {
 		copied, err := ships.CopyLibraries(opts.Ships, profile)
 		if err != nil {
 			return nil, err
 		}
-		say(opts.Log, "Copied %d missing ship file(s) into %s", copied, profile)
+		say(opts.Log, "Copied %d missing ship and save file(s) into %s", copied, profile)
 	}
 	if err := swap.Begin(opts.StatePath, opts.Install.Root, opts.PackDir); err != nil {
 		return nil, err

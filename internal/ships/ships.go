@@ -9,10 +9,11 @@ import (
 	"modpack-launcher/internal/fsutil"
 )
 
-// Libraries is a pair of ship folders from one profile.
+// Libraries is the ship folders and game saves from one profile.
 type Libraries struct {
 	SavedShips string
 	LostShips  string
+	SavedGames string
 }
 
 // CopyMissing copies files that are not already in the destination.
@@ -45,7 +46,7 @@ func CopyMissing(src, dst string) (int, error) {
 		if err != nil {
 			return err
 		}
-		if !fileInfo.Mode().IsRegular() {
+		if !fileInfo.Mode().IsRegular() || fileInfo.Name() == "steam_autocloud.vdf" {
 			return nil
 		}
 		if _, err := os.Stat(target); err == nil {
@@ -62,19 +63,21 @@ func CopyMissing(src, dst string) (int, error) {
 	return copied, err
 }
 
-// CopyLibraries byte-copies Saved Ships and Lost Ships into the mod profile.
-// Career saves are not part of Libraries and are not copied.
+// CopyLibraries byte-copies Saved Ships, Lost Ships, and Saved Games into the
+// mod profile. A file already in the mod profile is left unchanged. Settings
+// and logs are not part of Libraries.
 func CopyLibraries(src Libraries, profile string) (int, error) {
 	copied := 0
-	if src.SavedShips != "" {
-		n, err := CopyMissing(src.SavedShips, filepath.Join(profile, "Saved Ships"))
-		copied += n
-		if err != nil {
-			return copied, err
-		}
+	pairs := []struct{ src, name string }{
+		{src.SavedShips, "Saved Ships"},
+		{src.LostShips, "Lost Ships"},
+		{src.SavedGames, "Saved Games"},
 	}
-	if src.LostShips != "" {
-		n, err := CopyMissing(src.LostShips, filepath.Join(profile, "Lost Ships"))
+	for _, pair := range pairs {
+		if pair.src == "" {
+			continue
+		}
+		n, err := CopyMissing(pair.src, filepath.Join(profile, pair.name))
 		copied += n
 		if err != nil {
 			return copied, err
@@ -96,7 +99,7 @@ func FindProfileLibraries(roots []string) (Libraries, error) {
 			return Libraries{}, err
 		}
 		for _, candidate := range candidates {
-			when := newest(candidate.SavedShips, candidate.LostShips)
+			when := newest(candidate.SavedShips, candidate.LostShips, candidate.SavedGames)
 			if !found || when.After(bestTime) {
 				best = candidate
 				bestTime = when
@@ -105,7 +108,7 @@ func FindProfileLibraries(roots []string) (Libraries, error) {
 		}
 	}
 	if !found {
-		return Libraries{}, fmt.Errorf("no Steam Cosmoteer profile with Saved Ships or Lost Ships was found")
+		return Libraries{}, fmt.Errorf("no Steam Cosmoteer profile with ships or game saves was found")
 	}
 	return best, nil
 }
@@ -122,18 +125,21 @@ func candidateProfiles(root string) ([]Libraries, error) {
 			continue
 		}
 		for _, entry := range entries {
-			if !entry.IsDir() {
+			if !entry.IsDir() || entry.Name() == "ModPackProfile" {
 				continue
 			}
 			profile := filepath.Join(dir, entry.Name())
 			saved := filepath.Join(profile, "Saved Ships")
 			lost := filepath.Join(profile, "Lost Ships")
+			games := filepath.Join(profile, "Saved Games")
 			if _, err := os.Stat(saved); err != nil {
 				if _, lostErr := os.Stat(lost); lostErr != nil {
-					continue
+					if _, gamesErr := os.Stat(games); gamesErr != nil {
+						continue
+					}
 				}
 			}
-			out = append(out, Libraries{SavedShips: saved, LostShips: lost})
+			out = append(out, Libraries{SavedShips: saved, LostShips: lost, SavedGames: games})
 		}
 	}
 	return out, nil

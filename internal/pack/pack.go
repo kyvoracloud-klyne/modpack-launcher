@@ -5,6 +5,8 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +22,12 @@ import (
 
 const yamlModID = "radistmorse.modloader"
 
+// Delta describes a zip that upgrades one cached pack version to this release.
+type Delta struct {
+	From    string `json:"from"`
+	Archive string `json:"archive"`
+}
+
 // Manifest is the small release file that names a pack archive.
 type Manifest struct {
 	ID          string   `json:"id"`
@@ -28,6 +36,27 @@ type Manifest struct {
 	Archive     string   `json:"archive"`
 	Description string   `json:"description,omitempty"`
 	Parts       []string `json:"parts,omitempty"`
+	Files       string   `json:"files,omitempty"`
+	Deltas      []Delta  `json:"deltas,omitempty"`
+}
+
+// fileIndex is the optional per-file hash list attached to a release.
+type fileIndex struct {
+	ID      string                `json:"id"`
+	Version string                `json:"version"`
+	Files   map[string]fileEntry  `json:"files"`
+}
+
+type fileEntry struct {
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+}
+
+// deltaMeta is stored inside a delta zip as _delta.json.
+type deltaMeta struct {
+	From    string   `json:"from"`
+	To      string   `json:"to"`
+	Deleted []string `json:"deleted"`
 }
 
 // Mod is one top-level mod folder.
@@ -132,11 +161,29 @@ func Select(packs []Published, id, version string) (Published, error) {
 
 // EnsureCached downloads and extracts a pack when that version is not already cached.
 // progress may be nil. For a split archive it reports one transfer across every part.
+// When the manifest lists deltas and a matching older version is already cached, only the
+// delta zip is downloaded and applied. Old launchers that ignore deltas still use the full archive.
 func EnsureCached(ctx context.Context, client *githubrel.Client, cacheRoot string, item Published, progress githubrel.ProgressFunc) (string, error) {
 	dest := filepath.Join(cacheRoot, item.Manifest.ID, item.Manifest.Version)
 	stamp := filepath.Join(dest, ".extracted")
 	extractDir := filepath.Join(dest, "files")
 	if _, err := os.Stat(stamp); err == nil {
+		return extractDir, nil
+	}
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return "", err
+	}
+	if applied, deltaPath, err := tryDeltaCache(ctx, client, cacheRoot, dest, extractDir, item, progress); err != nil {
+		_ = os.RemoveAll(extractDir)
+		return "", err
+	} else if applied {
+		if err := verifyDeltaResult(ctx, client, dest, extractDir, deltaPath, item); err != nil {
+			_ = os.RemoveAll(extractDir)
+			return "", err
+		}
+		if err := os.WriteFile(stamp, []byte(item.Manifest.Version+"\n"), 0o644); err != nil {
+			return "", err
+		}
 		return extractDir, nil
 	}
 	archivePath := filepath.Join(dest, item.Manifest.Archive)
@@ -157,6 +204,204 @@ func EnsureCached(ctx context.Context, client *githubrel.Client, cacheRoot strin
 		return "", err
 	}
 	return extractDir, nil
+}
+
+func tryDeltaCache(ctx context.Context, client *githubrel.Client, cacheRoot, dest, extractDir string, item Published, progress githubrel.ProgressFunc) (bool, string, error) {
+	delta, baseDir, ok := findDeltaBase(cacheRoot, item)
+	if !ok {
+		return false, "", nil
+	}
+	asset, ok := githubrel.FindAsset(item.Release, delta.Archive)
+	if !ok {
+		return false, "", nil
+	}
+	if err := os.RemoveAll(extractDir); err != nil {
+		return false, "", err
+	}
+	if err := cloneTree(baseDir, extractDir); err != nil {
+		return false, "", fmt.Errorf("clone %s: %w", delta.From, err)
+	}
+	deltaPath := filepath.Join(dest, delta.Archive)
+	if err := client.DownloadProgress(ctx, asset, deltaPath, progress); err != nil {
+		return false, "", err
+	}
+	if err := ApplyDelta(deltaPath, extractDir); err != nil {
+		return false, "", err
+	}
+	return true, deltaPath, nil
+}
+
+func findDeltaBase(cacheRoot string, item Published) (Delta, string, bool) {
+	for _, delta := range item.Manifest.Deltas {
+		if delta.From == "" || delta.Archive == "" {
+			continue
+		}
+		base := filepath.Join(cacheRoot, item.Manifest.ID, delta.From)
+		if _, err := os.Stat(filepath.Join(base, ".extracted")); err != nil {
+			continue
+		}
+		files := filepath.Join(base, "files")
+		if _, err := os.Stat(files); err != nil {
+			continue
+		}
+		return delta, files, true
+	}
+	return Delta{}, "", false
+}
+
+// ApplyDelta overlays a delta zip onto an existing extracted pack directory.
+func ApplyDelta(deltaPath, extractDir string) error {
+	reader, err := zip.OpenReader(deltaPath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	var meta deltaMeta
+	for _, file := range reader.File {
+		if file.Name != "_delta.json" {
+			continue
+		}
+		in, err := file.Open()
+		if err != nil {
+			return err
+		}
+		data, err := io.ReadAll(in)
+		in.Close()
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(data, &meta); err != nil {
+			return fmt.Errorf("delta meta: %w", err)
+		}
+		break
+	}
+	for _, rel := range meta.Deleted {
+		target, err := safeJoin(extractDir, rel)
+		if err != nil {
+			return err
+		}
+		if err := os.RemoveAll(target); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	for _, file := range reader.File {
+		if file.Name == "_delta.json" || strings.HasSuffix(file.Name, "/") {
+			continue
+		}
+		target, err := safeJoin(extractDir, file.Name)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		in, err := file.Open()
+		if err != nil {
+			return err
+		}
+		err = writeReplace(target, in, file.Mode())
+		in.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func cloneTree(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return os.MkdirAll(dst, 0o755)
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if err := os.Link(path, target); err == nil {
+			return nil
+		}
+		return fsutil.CopyFile(path, target)
+	})
+}
+
+func writeReplace(path string, r io.Reader, mode os.FileMode) error {
+	_ = os.Remove(path)
+	return writeNew(path, r, mode)
+}
+
+func verifyDeltaResult(ctx context.Context, client *githubrel.Client, dest, extractDir, deltaPath string, item Published) error {
+	if item.Manifest.Files == "" {
+		return nil
+	}
+	asset, ok := githubrel.FindAsset(item.Release, item.Manifest.Files)
+	if !ok {
+		return fmt.Errorf("files index %q is not attached to the release", item.Manifest.Files)
+	}
+	indexPath := filepath.Join(dest, item.Manifest.Files)
+	if err := client.Download(ctx, asset, indexPath); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		return err
+	}
+	var index fileIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return fmt.Errorf("files index: %w", err)
+	}
+	reader, err := zip.OpenReader(deltaPath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	for _, file := range reader.File {
+		if file.Name == "_delta.json" || strings.HasSuffix(file.Name, "/") {
+			continue
+		}
+		entry, ok := index.Files[file.Name]
+		if !ok {
+			return fmt.Errorf("delta file %s missing from files index", file.Name)
+		}
+		target, err := safeJoin(extractDir, file.Name)
+		if err != nil {
+			return err
+		}
+		info, err := os.Stat(target)
+		if err != nil {
+			return fmt.Errorf("missing %s: %w", file.Name, err)
+		}
+		if entry.Size > 0 && info.Size() != entry.Size {
+			return fmt.Errorf("%s: size %d, want %d", file.Name, info.Size(), entry.Size)
+		}
+		sum, err := fileSHA256(target)
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(sum, entry.SHA256) {
+			return fmt.Errorf("%s: sha256 mismatch", file.Name)
+		}
+	}
+	return nil
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func downloadParts(ctx context.Context, client *githubrel.Client, dest string, item Published, archivePath string, progress githubrel.ProgressFunc) error {
