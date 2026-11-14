@@ -114,14 +114,17 @@ func TestListSelectAndCache(t *testing.T) {
 		t.Fatalf("selected = %+v", selected.Manifest)
 	}
 	cache := t.TempDir()
-	dir, err := EnsureCached(context.Background(), client, cache, selected, nil)
+	dir, how, err := EnsureCached(context.Background(), client, cache, selected, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if how != CacheFull {
+		t.Fatalf("how = %q, want full", how)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "Demo", "mod.rules")); err != nil {
 		t.Fatal(err)
 	}
-	again, err := EnsureCached(context.Background(), client, cache, selected, nil)
+	again, _, err := EnsureCached(context.Background(), client, cache, selected, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +226,7 @@ func TestSplitDownloadProgress(t *testing.T) {
 	}
 	var snaps []githubrel.Progress
 	var previous int64
-	_, err = EnsureCached(context.Background(), client, t.TempDir(), listed[0], func(p githubrel.Progress) {
+	_, _, err = EnsureCached(context.Background(), client, t.TempDir(), listed[0], func(p githubrel.Progress) {
 		if p.Received < previous {
 			t.Fatalf("progress went backwards: %+v after %d", p, previous)
 		}
@@ -309,16 +312,19 @@ func TestApplyDeltaAndEnsureCached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := EnsureCached(context.Background(), client, cache, v1pack, nil); err != nil {
+	if _, _, err := EnsureCached(context.Background(), client, cache, v1pack, nil); err != nil {
 		t.Fatal(err)
 	}
 	v2pack, err := Select(listed, "demo", "1.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir, err := EnsureCached(context.Background(), client, cache, v2pack, nil)
+	dir, how, err := EnsureCached(context.Background(), client, cache, v2pack, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if how != CacheDelta+":1.0.0" {
+		t.Fatalf("how = %q", how)
 	}
 	body, err := os.ReadFile(filepath.Join(dir, "Demo", "mod.rules"))
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"modpack-launcher/internal/config"
 	"modpack-launcher/internal/game"
@@ -96,10 +97,21 @@ func Launch(cfg config.Config, packID, version, packDir string, log func(string)
 		if err != nil {
 			return err
 		}
-		say(log, "Downloading %s %s", selected.Manifest.ID, selected.Manifest.Version)
-		dir, err = pack.EnsureCached(context.Background(), client, cache, selected, progress)
+		say(log, "Fetching %s %s", selected.Manifest.ID, selected.Manifest.Version)
+		var how string
+		dir, how, err = pack.EnsureCached(context.Background(), client, cache, selected, progress)
 		if err != nil {
 			return err
+		}
+		switch {
+		case how == pack.CacheHit:
+			say(log, "Using cached %s %s", selected.Manifest.ID, selected.Manifest.Version)
+		case strings.HasPrefix(how, pack.CacheDelta+":"):
+			say(log, "Applied delta from %s → %s (skipped full archive)", strings.TrimPrefix(how, pack.CacheDelta+":"), selected.Manifest.Version)
+		case how == pack.CacheFull:
+			say(log, "Downloaded full archive for %s %s", selected.Manifest.ID, selected.Manifest.Version)
+		default:
+			say(log, "Pack %s %s ready (%s)", selected.Manifest.ID, selected.Manifest.Version, how)
 		}
 		say(log, "Pack %s %s is in %s", selected.Manifest.ID, selected.Manifest.Version, dir)
 	}

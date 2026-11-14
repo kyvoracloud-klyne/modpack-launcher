@@ -159,76 +159,84 @@ func Select(packs []Published, id, version string) (Published, error) {
 	return Published{}, fmt.Errorf("pack %q version %q was not found", id, version)
 }
 
+// How EnsureCached filled the extract directory.
+const (
+	CacheHit   = "cached"
+	CacheDelta = "delta"
+	CacheFull  = "full"
+)
+
 // EnsureCached downloads and extracts a pack when that version is not already cached.
 // progress may be nil. For a split archive it reports one transfer across every part.
 // When the manifest lists deltas and a matching older version is already cached, only the
-// delta zip is downloaded and applied. Old launchers that ignore deltas still use the full archive.
-func EnsureCached(ctx context.Context, client *githubrel.Client, cacheRoot string, item Published, progress githubrel.ProgressFunc) (string, error) {
+// delta zip is downloaded and applied. how is CacheHit, CacheDelta+":"+from, or CacheFull.
+// Old launchers that ignore deltas still use the full archive.
+func EnsureCached(ctx context.Context, client *githubrel.Client, cacheRoot string, item Published, progress githubrel.ProgressFunc) (dir string, how string, err error) {
 	dest := filepath.Join(cacheRoot, item.Manifest.ID, item.Manifest.Version)
 	stamp := filepath.Join(dest, ".extracted")
 	extractDir := filepath.Join(dest, "files")
 	if _, err := os.Stat(stamp); err == nil {
-		return extractDir, nil
+		return extractDir, CacheHit, nil
 	}
 	if err := os.MkdirAll(dest, 0o755); err != nil {
-		return "", err
+		return "", "", err
 	}
-	if applied, deltaPath, err := tryDeltaCache(ctx, client, cacheRoot, dest, extractDir, item, progress); err != nil {
+	if applied, from, deltaPath, err := tryDeltaCache(ctx, client, cacheRoot, dest, extractDir, item, progress); err != nil {
 		_ = os.RemoveAll(extractDir)
-		return "", err
+		return "", "", err
 	} else if applied {
 		if err := verifyDeltaResult(ctx, client, dest, extractDir, deltaPath, item); err != nil {
 			_ = os.RemoveAll(extractDir)
-			return "", err
+			return "", "", err
 		}
 		if err := os.WriteFile(stamp, []byte(item.Manifest.Version+"\n"), 0o644); err != nil {
-			return "", err
+			return "", "", err
 		}
-		return extractDir, nil
+		return extractDir, CacheDelta + ":" + from, nil
 	}
 	archivePath := filepath.Join(dest, item.Manifest.Archive)
 	if len(item.Manifest.Parts) == 0 {
 		if err := client.DownloadProgress(ctx, item.Archive, archivePath, progress); err != nil {
-			return "", err
+			return "", "", err
 		}
 	} else if err := downloadParts(ctx, client, dest, item, archivePath, progress); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := os.RemoveAll(extractDir); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := Extract(archivePath, extractDir); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := os.WriteFile(stamp, []byte(item.Manifest.Version+"\n"), 0o644); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return extractDir, nil
+	return extractDir, CacheFull, nil
 }
 
-func tryDeltaCache(ctx context.Context, client *githubrel.Client, cacheRoot, dest, extractDir string, item Published, progress githubrel.ProgressFunc) (bool, string, error) {
+func tryDeltaCache(ctx context.Context, client *githubrel.Client, cacheRoot, dest, extractDir string, item Published, progress githubrel.ProgressFunc) (bool, string, string, error) {
 	delta, baseDir, ok := findDeltaBase(cacheRoot, item)
 	if !ok {
-		return false, "", nil
+		return false, "", "", nil
 	}
 	asset, ok := githubrel.FindAsset(item.Release, delta.Archive)
 	if !ok {
-		return false, "", nil
+		return false, "", "", nil
 	}
 	if err := os.RemoveAll(extractDir); err != nil {
-		return false, "", err
+		return false, "", "", err
 	}
 	if err := cloneTree(baseDir, extractDir); err != nil {
-		return false, "", fmt.Errorf("clone %s: %w", delta.From, err)
+		return false, "", "", fmt.Errorf("clone %s: %w", delta.From, err)
 	}
 	deltaPath := filepath.Join(dest, delta.Archive)
 	if err := client.DownloadProgress(ctx, asset, deltaPath, progress); err != nil {
-		return false, "", err
+		return false, "", "", err
 	}
 	if err := ApplyDelta(deltaPath, extractDir); err != nil {
-		return false, "", err
+		return false, "", "", err
 	}
-	return true, deltaPath, nil
+	return true, delta.From, deltaPath, nil
 }
 
 func findDeltaBase(cacheRoot string, item Published) (Delta, string, bool) {
